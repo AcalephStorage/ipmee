@@ -1,0 +1,6 @@
+[submodule "vendor/github.com/vmware/goipmi"]
+	path = vendor/github.com/vmware/goipmi
+	url = https://github.com/vmware/goipmi.git
+[submodule "vendor/github.com/emiclkei/go-restful"]
+	path = vendor/github.com/emiclkei/go-restful
+	url = https://github.com/emicklei/go-restful.git
