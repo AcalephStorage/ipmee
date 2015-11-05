@@ -1,7 +1,7 @@
 ipmee
 =====
 
-ipmee is an API that can query and control the power state of servers via IPMI.
+A handy CLI and API to manage server power state with IPMI (API for now)
 
 ## Building
 
