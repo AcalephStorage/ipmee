@@ -7,6 +7,7 @@ A handy CLI and API to manage server power state with IPMI (API for now)
 
 ```
 $ git submodule update
+$ export GO15VENDOREXPERIMENT=1
 $ go build .
 ```
 
