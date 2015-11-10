@@ -2,12 +2,11 @@ package main
 
 import (
 	"flag"
-	"fmt"
+	"net"
 	"os"
 	"strconv"
+	"time"
 
-	"encoding/json"
-	"io/ioutil"
 	"net/http"
 
 	"github.com/emicklei/go-restful"
@@ -15,21 +14,13 @@ import (
 )
 
 type Ipmee struct {
-	*Config
-}
-
-type Config struct {
-	ApiHost string   `json:"api_host"`
-	ApiPort int      `json:"api_port"`
-	Servers []Server `json:"servers"`
+	*IPMIFinder
+	Username string
+	Password string
 }
 
 type Server struct {
-	Name     string `json:"name"`
-	Host     string `json:"host"`
-	Port     int    `json:"port"`
-	Username string `json:"username,omitempty"`
-	Password string `json:"password,omitempty"`
+	Host string `json:"host"`
 }
 
 type MachineStatus struct {
@@ -51,38 +42,97 @@ func (cps ChassisPowerStatus) String() string {
 	}
 }
 
+var (
+	logLevel     string
+	bindHost     string
+	bindPort     int
+	cidr         string
+	ipmiScanners int
+	scanInterval int
+	username     string
+	password     string
+)
+
 func main() {
-	var config Config
-	loadConfig(&config)
-	startServer(&config)
+	parseArgs()
+	parseEnvs()
+	InitLogging(logLevel)
+	startServer()
 }
 
-func loadConfig(config *Config) {
-	configFile := flag.String("config", "config.yaml", "the configuration file")
+func parseArgs() {
+	flag.StringVar(&logLevel, "log-level", "WARN", "the log level [ERROR, WARN, INFO, DEBUG].")
+	flag.StringVar(&bindHost, "bind-host", "0.0.0.0", "address to bind the api")
+	flag.IntVar(&bindPort, "bind-port", 5000, "port to bind the api")
+	flag.StringVar(&cidr, "cidr", "", "the CIDR of the network to search for servers.")
+	flag.IntVar(&ipmiScanners, "ipmi-scanners", 16, "number of sub-routines to search for servers.")
+	flag.IntVar(&scanInterval, "scan-interval", 1800, "interval to rescan for servers. Defaults to 30mins.")
+	flag.StringVar(&username, "username", "", "username to access the servers")
+	flag.StringVar(&password, "password", "", "password to access the servers")
 	flag.Parse()
+}
 
-	// read config file
-	// load config from file if exists
-	fileData, err := ioutil.ReadFile(*configFile)
-	if err != nil {
-		fmt.Println("unable to load config file")
-		os.Exit(-2)
+func parseEnvs() {
+	if envLogLevel := os.Getenv("IPMEE_LOG_LEVEL"); envLogLevel != "" {
+		logLevel = envLogLevel
 	}
-
-	if err := json.Unmarshal(fileData, config); err != nil {
-		fmt.Println("unable to read config file")
-		os.Exit(-3)
+	if envBindHost := os.Getenv("IPMEE_BIND_HOST"); envBindHost != "" {
+		bindHost = envBindHost
+	}
+	if envBindPort := os.Getenv("IPMEE_BIND_PORT"); envBindPort != "" {
+		port, err := strconv.Atoi(envBindPort)
+		if err != nil {
+			Error.Println("Get Bind Port ENV Var:", err)
+			os.Exit(1)
+		}
+		bindPort = port
+	}
+	if envCidr := os.Getenv("IPMEE_CIDR"); envCidr != "" {
+		cidr = envCidr
+	}
+	if envIpmiScanners := os.Getenv("IPMEE_IPMI_SCANNERS"); envIpmiScanners != "" {
+		scanners, err := strconv.Atoi(envIpmiScanners)
+		if err != nil {
+			Error.Println("Get IPMI Scanners ENV Var:", err)
+			os.Exit(1)
+		}
+		ipmiScanners = scanners
+	}
+	if envScanInterval := os.Getenv("IPMEE_SCAN_INTERVAL"); envScanInterval != "" {
+		interval, err := strconv.Atoi(envScanInterval)
+		if err != nil {
+			Error.Println("Get Scan Interval ENV Var:", err)
+			os.Exit(1)
+		}
+		scanInterval = interval
+	}
+	if envUsername := os.Getenv("IPMEE_USERNAME"); envUsername != "" {
+		username = envUsername
+	}
+	if envPassword := os.Getenv("IPMEE_PASSWORD"); envPassword != "" {
+		password = envPassword
 	}
 }
 
-func startServer(config *Config) {
+func startServer() {
 
-	ipmee := &Ipmee{config}
+	ipmiFinder := &IPMIFinder{
+		Workers:        ipmiScanners,
+		Cidr:           cidr,
+		RescanInterval: time.Duration(scanInterval) * time.Second,
+	}
+
+	ipmee := &Ipmee{
+		IPMIFinder: ipmiFinder,
+		Username:   username,
+		Password:   password,
+	}
+	ipmee.Start()
 
 	container := restful.NewContainer()
 	ipmee.register(container)
 
-	address := ipmee.ApiHost + ":" + strconv.Itoa(ipmee.ApiPort)
+	address := net.JoinHostPort(bindHost, strconv.Itoa(bindPort))
 
 	server := &http.Server{
 		Addr:    address,
@@ -90,47 +140,8 @@ func startServer(config *Config) {
 	}
 
 	server.ListenAndServe()
-
-	// for _, server := range config.Servers {
-
-	// 	fmt.Printf("Checking status of %s... ", server.Name)
-
-	// 	conn := &ipmi.Connection{
-	// 		Hostname:  server.Host,
-	// 		Port:      server.Port,
-	// 		Username:  server.Username,
-	// 		Password:  server.Password,
-	// 		Interface: "lanplus",
-	// 	}
-
-	// 	client, err := ipmi.NewClient(conn)
-	// 	if err != nil {
-	// 		fmt.Println("error creating client", err)
-	// 		os.Exit(-1)
-	// 	}
-
-	// 	ipmee := &Ipmee{client}
-	// 	ipmee.setChassisPower(ipmi.ControlPowerUp)
-	// 	status, _ := ipmee.chassisPowerStatus()
-	// 	fmt.Printf("%s\n", status)
-	// }
-
-	// 	conn := &ipmi.Connection{
-	// 	Hostname:  "112.198.53.42",
-	// 	Port:      5555,
-	// 	Username:  "admin",
-	// 	Password:  "admin",
-	// 	Interface: "lan",
-	// }
-
-	// client, err := ipmi.NewClient(conn)
-	// if err != nil {
-	// 	fmt.Println("error creating client:", err)
-	// 	os.Exit(-1) // fail.. but what code?
-	// }
-
-	// ipmee := &Ipmee{client}
-	// ipmee.chassisStatus()
+	// add capture here for signals
+	ipmee.Stop()
 }
 
 func (ipmee *Ipmee) register(container *restful.Container) {
@@ -161,21 +172,18 @@ func (ipmee *Ipmee) register(container *restful.Container) {
 }
 
 func (ipmee *Ipmee) GetMachines(req *restful.Request, res *restful.Response) {
-	result := make([]Server, len(ipmee.Servers))
-	copy(result, ipmee.Servers)
-	for i := range result {
-		result[i].Username = ""
-		result[i].Password = ""
+	servers := ipmee.ListServers()
+	out := make([]Server, len(servers))
+	for i, server := range servers {
+		out[i] = Server{server}
 	}
-	res.WriteEntity(result)
+	res.WriteEntity(out)
 }
 
 func (ipmee *Ipmee) GetMachine(req *restful.Request, res *restful.Response) {
 	machineName := req.PathParameter("machine-name")
 	matchingServer := ipmee.findServer(machineName)
 	if matchingServer != nil {
-		matchingServer.Username = ""
-		matchingServer.Password = ""
 		res.WriteEntity(matchingServer)
 	} else {
 		res.AddHeader("Content-Type", "text/plain")
@@ -194,7 +202,7 @@ func (ipmee *Ipmee) GetMachineStatus(req *restful.Request, res *restful.Response
 			Data:            &ipmi.ChassisStatusRequest{},
 		}
 		ipmiRes := &ipmi.ChassisStatusResponse{}
-		client, err := createIpmiClient(matchingServer)
+		client, err := ipmee.createIpmiClient(matchingServer)
 		if err != nil {
 			res.AddHeader("Content-Type", "text/plain")
 			res.WriteErrorString(http.StatusServiceUnavailable, err.Error())
@@ -205,8 +213,6 @@ func (ipmee *Ipmee) GetMachineStatus(req *restful.Request, res *restful.Response
 			res.WriteErrorString(http.StatusServiceUnavailable, err.Error())
 		}
 		status := ChassisPowerStatus(ipmiRes.PowerState)
-		machineStatus.Username = ""
-		machineStatus.Password = ""
 		machineStatus.PowerCode = status
 		machineStatus.PowerStatus = status.String()
 		res.WriteEntity(machineStatus)
@@ -247,7 +253,7 @@ func (ipmee *Ipmee) PowerOffMachine(req *restful.Request, res *restful.Response)
 }
 
 func (ipmee *Ipmee) changeMachineState(server *Server, state ipmi.ChassisControl) error {
-	client, err := createIpmiClient(server)
+	client, err := ipmee.createIpmiClient(server)
 	if err != nil {
 		return err
 	}
@@ -266,21 +272,22 @@ func (ipmee *Ipmee) changeMachineState(server *Server, state ipmi.ChassisControl
 // 	return err
 // }
 
-func createIpmiClient(server *Server) (*ipmi.Client, error) {
+func (ipmee *Ipmee) createIpmiClient(server *Server) (*ipmi.Client, error) {
 	conn := &ipmi.Connection{
 		Hostname:  server.Host,
-		Port:      server.Port,
-		Username:  server.Username,
-		Password:  server.Password,
+		Port:      623,
+		Username:  ipmee.Username,
+		Password:  ipmee.Password,
 		Interface: "lanplus",
 	}
 	return ipmi.NewClient(conn)
 }
 
 func (ipmee *Ipmee) findServer(serverName string) *Server {
-	for _, server := range ipmee.Servers {
-		if server.Name == serverName {
-			return &server
+	servers := ipmee.ListServers()
+	for _, server := range servers {
+		if server == serverName {
+			return &Server{server}
 		}
 	}
 	return nil
