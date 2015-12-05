@@ -5,6 +5,7 @@ import (
 	"net"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"net/http"
@@ -54,6 +55,7 @@ var (
 )
 
 func main() {
+
 	parseArgs()
 	parseEnvs()
 	InitLogging(logLevel)
@@ -61,7 +63,7 @@ func main() {
 }
 
 func parseArgs() {
-	flag.StringVar(&logLevel, "log-level", "WARN", "the log level [ERROR, WARN, INFO, DEBUG].")
+	flag.StringVar(&logLevel, "log-level", "INFO", "the log level [ERROR, WARN, INFO, DEBUG].")
 	flag.StringVar(&bindHost, "bind-host", "0.0.0.0", "address to bind the api")
 	flag.IntVar(&bindPort, "bind-port", 5000, "port to bind the api")
 	flag.StringVar(&cidr, "cidr", "", "the CIDR of the network to search for servers.")
@@ -139,6 +141,7 @@ func startServer() {
 		Handler: container,
 	}
 
+	Info.Println("Starting IPMEE...")
 	server.ListenAndServe()
 	// add capture here for signals
 	ipmee.Stop()
@@ -148,7 +151,6 @@ func (ipmee *Ipmee) register(container *restful.Container) {
 	ws := &restful.WebService{}
 
 	ws.Path("/api/v1/machines/").
-		Consumes(restful.MIME_JSON).
 		Produces(restful.MIME_JSON)
 
 	ws.Route(ws.GET("/").To(ipmee.GetMachines).
@@ -162,11 +164,9 @@ func (ipmee *Ipmee) register(container *restful.Container) {
 		Param(ws.PathParameter("machine-name", "the name of the machine").DataType("string")).
 		Writes(MachineStatus{}))
 
-	ws.Route(ws.POST("/{machine-name}/on").To(ipmee.PowerOnMachine).
-		Param(ws.PathParameter("machine-name", "the name of the machine").DataType("string")))
-
-	ws.Route(ws.POST("/{machine-name}/off").To(ipmee.PowerOffMachine).
-		Param(ws.PathParameter("machine-name", "the name of the machine").DataType("string")))
+	ws.Route(ws.POST("/{machine-name}/{state}").To(ipmee.ChangeMachinePowerState).
+		Param(ws.PathParameter("machine-name", "the name of the machine").DataType("string")).
+		Param(ws.PathParameter("state", "the power state [on,off,reset,cycle]")))
 
 	container.Add(ws)
 }
@@ -222,55 +222,71 @@ func (ipmee *Ipmee) GetMachineStatus(req *restful.Request, res *restful.Response
 	}
 }
 
-func (ipmee *Ipmee) PowerOnMachine(req *restful.Request, res *restful.Response) {
+func (ipmee *Ipmee) ChangeMachinePowerState(req *restful.Request, res *restful.Response) {
 	machineName := req.PathParameter("machine-name")
-	matchingServer := ipmee.findServer(machineName)
-	if matchingServer != nil {
-		err := ipmee.changeMachineState(matchingServer, ipmi.ControlPowerUp)
-		if err != nil {
+	powerState := req.PathParameter("state")
+
+	var state ipmi.ChassisControl
+	switch strings.ToLower(powerState) {
+	case "on":
+		state = ipmi.ControlPowerUp
+	case "off":
+		state = ipmi.ControlPowerDown
+	case "reset":
+		state = ipmi.ControlPowerHardReset
+	case "cycle":
+		state = ipmi.ControlPowerCycle
+	default:
+		res.AddHeader("Content-Type", "text/plain")
+		res.WriteErrorString(http.StatusNotAcceptable, "power state not supported")
+		return
+	}
+
+	foundServers := ipmee.ListServers()
+	servers := make([]Server, 0)
+	if strings.ToLower(machineName) != "all" {
+		matchingServer := ipmee.findServer(machineName)
+		if matchingServer != nil {
+			servers = append(servers, *matchingServer)
+		} else {
 			res.AddHeader("Content-Type", "text/plain")
-			res.WriteErrorString(http.StatusServiceUnavailable, err.Error())
+			res.WriteErrorString(http.StatusNotFound, "server not found")
 		}
 	} else {
-		res.AddHeader("Content-Type", "text/plain")
-		res.WriteErrorString(http.StatusNotFound, "server not found")
-	}
-}
-
-func (ipmee *Ipmee) PowerOffMachine(req *restful.Request, res *restful.Response) {
-	machineName := req.PathParameter("machine-name")
-	matchingServer := ipmee.findServer(machineName)
-	if matchingServer != nil {
-		err := ipmee.changeMachineState(matchingServer, ipmi.ControlPowerDown)
-		if err != nil {
-			res.AddHeader("Content-Type", "text/plain")
-			res.WriteErrorString(http.StatusServiceUnavailable, err.Error())
+		for _, srv := range foundServers {
+			server := ipmee.findServer(srv)
+			servers = append(servers, *server)
 		}
-	} else {
+	}
+	errs := ipmee.changeMachineState(state, servers...)
+	if len(errs) > 0 {
+		errMessages := make([]string, len(errs))
+		for _, err := range errs {
+			errMessages = append(errMessages, err.Error())
+		}
+		errMessage := strings.Join(errMessages, "\n")
 		res.AddHeader("Content-Type", "text/plain")
-		res.WriteErrorString(http.StatusNotFound, "server not found")
+		res.WriteErrorString(http.StatusServiceUnavailable, errMessage)
 	}
+
 }
 
-func (ipmee *Ipmee) changeMachineState(server *Server, state ipmi.ChassisControl) error {
-	client, err := ipmee.createIpmiClient(server)
-	if err != nil {
-		return err
+func (ipmee *Ipmee) changeMachineState(state ipmi.ChassisControl, servers ...Server) []error {
+	errs := make([]error, 0)
+	for _, server := range servers {
+		client, err := ipmee.createIpmiClient(&server)
+		if err != nil {
+			errs = append(errs, err)
+			continue
+		}
+		Info.Printf("Changing %s to %s...", server.Host, state)
+		err = client.Control(state)
+		if err != nil {
+			errs = append(errs, err)
+		}
 	}
-	err = client.Control(state)
-	if err != nil {
-		return err
-	}
-	return nil
+	return errs
 }
-
-// func (ipmee *Ipmee) setChassisPower(state ipmi.ChassisControl) error {
-// 	err := ipmee.client.Control(state)
-// 	if err != nil {
-// 		fmt.Println("error changing control")
-// 	}
-// 	return err
-// }
 
 func (ipmee *Ipmee) createIpmiClient(server *Server) (*ipmi.Client, error) {
 	conn := &ipmi.Connection{

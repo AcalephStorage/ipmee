@@ -51,12 +51,14 @@ func (i *IPMIFinder) startProcess() {
 			close(i.stopChannel)
 			break
 		case server := <-i.addServerChannel:
+			Info.Println("Found IPMI Interface: ", server)
 			i.servers = append(i.servers, server)
 		}
 	}
 }
 
 func (i *IPMIFinder) scanServers() {
+	Info.Printf("Scanning for servers in range %s...", i.Cidr)
 	i.servers = nil
 	ip, ipnet, err := net.ParseCIDR(i.Cidr)
 	if err != nil {
