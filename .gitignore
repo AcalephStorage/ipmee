@@ -25,3 +25,6 @@ _testmain.go
 
 /config.json
 /ipmee
+
+/bin
+/vendor/src

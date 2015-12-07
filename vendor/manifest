@@ -1,0 +1,17 @@
+{
+	"version": 0,
+	"dependencies": [
+		{
+			"importpath": "github.com/emicklei/go-restful",
+			"repository": "https://github.com/emicklei/go-restful",
+			"revision": "777bb3f19bcafe2575ffb2a3e46af92509ae9594",
+			"branch": "master"
+		},
+		{
+			"importpath": "github.com/vmware/goipmi",
+			"repository": "https://github.com/vmware/goipmi",
+			"revision": "ee598d2a3447d21f8ae7ad2afc6b09d46ad02a54",
+			"branch": "master"			
+		}
+	]
+}
